@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MP3+SRT+PDF Highlight</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        .audio-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background-color: #f1f1f1;
+            padding: 10px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+        }
+        
+        .file-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 10px;
+            background-color: #ccc;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .progress-bar div {
+            height: 100%;
+            background-color: #2196F3;
+            width: 0%;
+        }
+        
+        .current-subtitle {
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            font-size: 16px;
+            font-style: italic;
+            text-align: center;
+            width: 80%;
+            max-width: 800px;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            position: fixed;
+            top: 200px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9;
+        }
+
+        .complex-text-container {
+            margin-top: 160px;
+            height: calc(100vh - 80px);
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #fff;
+        }
+
+        .highlight {
+            background-color: yellow;
+        }
+        
+        .translation {
+            color: blue;
+        }
+        
+        .hidden {
+            display: none;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="audio-controls">
+    <audio id="audio" controls>
+        <source src="" type="audio/mpeg">
+        Your browser does not support the audio element.
+    </audio>
+    <button id="back10">⏪ -10 sec</button>
+    <button id="forward10">⏩ +10 sec</button>
+    <div class="progress-bar" id="progressBar">
+        <div></div>
+    </div>
+    <label>
+        <input type="checkbox" id="toggleFiles" />
+        Show/Hide file selectors
+    </label>
+    <div class="file-controls" id="fileControls">
+        <label for="audioFileInput">Choose MP3 file:</label>
+        <input type="file" id="audioFileInput" accept="audio/mpeg" />
+        <label for="subtitleFileInput">Choose SRT file:</label>
+        <input type="file" id="subtitleFileInput" accept=".srt" />
+        <label for="translationFileInput">Choose Translation SRT file:</label>
+        <input type="file" id="translationFileInput" accept=".srt" />
+        <label for="complexTextFileInput">Choose exported PDF file (HTML):</label>
+        <input type="file" id="complexTextFileInput" accept=".html" />
+    </div>
+</div>
+<div class="current-subtitle" id="currentSubtitle"></div>
+<div id="complexText" class="complex-text-container"></div>
+
+<script>
+    const audio = document.getElementById('audio');
+    const complexTextContainer = document.getElementById('complexText');
+    const back10 = document.getElementById('back10');
+    const forward10 = document.getElementById('forward10');
+    const progressBar = document.getElementById('progressBar');
+    const progressBarFill = progressBar.querySelector('div');
+    const audioFileInput = document.getElementById('audioFileInput');
+    const subtitleFileInput = document.getElementById('subtitleFileInput');
+    const translationFileInput = document.getElementById('translationFileInput');
+    const currentSubtitle = document.getElementById('currentSubtitle');
+    const complexTextFileInput = document.getElementById('complexTextFileInput');
+    const fileControls = document.getElementById('fileControls');
+    const toggleFiles = document.getElementById('toggleFiles');
+    
+    let subtitles = [];
+    let translationSubtitles = [];
+    let spans = [];
+    
+    let lastEndIndex = -1;
+    let lastHighlightedSubtitle = null;
+    
+    toggleFiles.addEventListener('change', () => {
+        if (toggleFiles.checked) {
+            fileControls.classList.add('hidden');
+            currentSubtitle.style.top = '80px'; //absolute values are evil
+        } else {
+            fileControls.classList.remove('hidden');
+            currentSubtitle.style.top = '200px';
+        }
+    });
+
+    function parseSrtTime(timeString) {
+        const [hours, minutes, seconds] = timeString.split(':');
+        const [sec, millis] = seconds.split(',');
+        return parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(sec) + parseInt(millis) / 1000;
+    }
+
+    function parseSrt(content) {
+        const subs = [];
+        const blocks = content.trim().replace(/\r/g, '').split(/\n\s*\n/);
+        blocks.forEach(block => {
+            const lines = block.split('\n');
+            if (lines.length >= 3) {
+                const timeRange = lines[1].split(' --> ');
+                const start = parseSrtTime(timeRange[0]);
+                const end = parseSrtTime(timeRange[1]);
+                const text = lines.slice(2).join(' ');
+                subs.push({ start, end, text });
+            }
+        });
+        return subs;
+    }
+        
+    function cleanText(text) {
+        return text.replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').toLowerCase();
+    }
+
+    function highlightSubtitle(subtitle) {
+        if (lastHighlightedSubtitle === subtitle) {
+            return;
+        }
+        clearHighlights();
+        
+        let subtitleText = cleanText(subtitle.text);
+        let accumulatedText = '';
+        let startIndex = -1;
+        let endIndex = -1;
+
+        for (let i = lastEndIndex + 1; i < spans.length; i++) {
+            accumulatedText = '';
+            startIndex = -1;
+
+            for (let j = i; j < spans.length; j++) {
+                let spanText = cleanText(spans[j].innerText);
+
+                if (accumulatedText === '' && subtitleText.startsWith(spanText)) {
+                    startIndex = j;
+                }
+
+                accumulatedText += spanText;
+
+                //console.log(`Accumulating: "${accumulatedText}" from index ${i} to ${j}`);
+                if (accumulatedText === subtitleText) {
+                    endIndex = j;
+                    //console.log(`Match found! Start: ${startIndex}, End: ${endIndex}`);
+                    break;
+                }
+
+                if (accumulatedText.length > subtitleText.length) {
+                    break;
+                }
+            }
+
+            if (startIndex !== -1 && endIndex !== -1) {
+                break;
+            }
+        }
+
+        if (startIndex !== -1 && endIndex !== -1) {
+            for (let k = startIndex; k <= endIndex; k++) {
+                spans[k].classList.add('highlight');
+            }
+            lastEndIndex = endIndex;
+            lastHighlightedSubtitle = subtitle;
+            //console.log(`Highlight applied from index ${startIndex} to ${endIndex}`);
+        } else {
+            lastEndIndex = -1;
+            //console.log(`Failed to match subtitle: "${subtitle.text}"`);
+        }
+    }
+
+    function clearHighlights() {
+        spans.forEach(span => {
+            span.classList.remove('highlight');
+        });
+    }
+
+    audio.addEventListener('timeupdate', () => {
+        const currentTime = audio.currentTime;
+        let subtitleText = '';
+        let translationText = '';
+        
+        subtitles.forEach(subtitle => {
+            if (currentTime >= subtitle.start && currentTime <= subtitle.end) {
+                subtitleText = subtitle.text;
+                highlightSubtitle(subtitle);
+            }
+        });
+        if (translationSubtitles.length > 0) {
+            translationSubtitles.forEach(subtitle => {
+                if (currentTime >= subtitle.start && currentTime <= subtitle.end) {
+                    translationText = subtitle.text;
+                }
+            });
+        }
+        
+        if (subtitleText) {
+            currentSubtitle.innerHTML = subtitleText;
+            if (translationText) {
+                currentSubtitle.innerHTML += ` <span class="translation">[${translationText}]</span>`;
+            }
+        } else {
+            currentSubtitle.innerHTML = '';
+        }
+    });
+
+    back10.addEventListener('click', () => {
+        audio.currentTime = Math.max(0, audio.currentTime - 10);
+    });
+
+    forward10.addEventListener('click', () => {
+        audio.currentTime = Math.min(audio.duration, audio.currentTime + 10);
+    });
+
+    audio.addEventListener('timeupdate', () => {
+        const percentage = (audio.currentTime / audio.duration) * 100;
+        progressBarFill.style.width = percentage + '%';
+    });
+
+    progressBar.addEventListener('click', (e) => {
+        const rect = progressBar.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const width = rect.width;
+        const clickPercentage = clickX / width;
+        audio.currentTime = clickPercentage * audio.duration;
+    });
+    
+    audioFileInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const objectURL = URL.createObjectURL(file);
+            audio.src = objectURL;
+            audio.play();
+        }
+    });
+    
+    subtitleFileInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                try {
+                    const content = e.target.result;
+                    subtitles = parseSrt(content);
+                    //console.log('Subtitles loaded:', subtitles);
+                } catch (err) {
+                    console.error('Error parsing subtitles file:', err);
+                    alert('Invalid subtitles file format.');
+                }
+            };
+            reader.readAsText(file);
+        }
+    });
+    
+    translationFileInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                translationSubtitles = parseSrt(e.target.result);
+                console.log('Translation subtitles loaded:', translationSubtitles);
+            };
+            reader.readAsText(file);
+        }
+    });
+    
+    complexTextFileInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                try {
+                    const content = e.target.result;
+                    complexTextContainer.innerHTML = content;
+                    spans = Array.from(complexTextContainer.querySelectorAll('.ssdspan'));
+                    console.log('Complex text loaded');
+                } catch (err) {
+                    console.error('Error loading complex text file:', err);
+                    alert('Invalid complex text file.');
+                }
+            };
+            reader.readAsText(file);
+        }
+    });
+</script>
+
+</body>
+</html>

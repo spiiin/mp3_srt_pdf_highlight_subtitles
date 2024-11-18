@@ -1,0 +1,2 @@
+- auto-scroll to active subtitle
+- tool for semi/auto sync translations
