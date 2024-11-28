@@ -1,17 +1,21 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import re
-
+from itertools import takewhile
 
 class SRTManagerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("SRT Manager [q - replace selected, w - clear selected]")
+        self.root.title("SRT Manager [q - replace selected, w - clear selected, e - select next phrase, r - select next sentence, t - select next phrase with AI]")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=0)
+        self.root.rowconfigure(2, weight=0)
         
         self.srt_data = []  # Store original SRT content with timings and text
+        self.model = None  # Lazy initialization of model
+        self.tokenizer = None  # Lazy initialization of tokenizer
+        self.suggestions = []  # Store suggestions for buttons
 
         self.paned_window = ttk.PanedWindow(root, orient=tk.VERTICAL)
         self.paned_window.grid(row=0, column=0, sticky="nsew")
@@ -33,6 +37,21 @@ class SRTManagerApp:
 
         self.paned_window.add(self.treeview_frame)
 
+        self.srt_table.bind("<<TreeviewSelect>>", self.restore_textbox_focus)
+        self.srt_table.bind("<Double-1>", self.edit_table_cell)
+        
+        self.srt_table.tag_configure("mismatch", background="#CCFFCC")
+        
+        self.suggestions_frame = ttk.Frame(root)
+        self.paned_window.add(self.suggestions_frame)
+        #self.suggestions_frame.grid(row=2, column=0, pady=5, sticky="nsew")
+        self.suggestion_buttons = []
+        for i in range(5):
+            button = ttk.Button(self.suggestions_frame, text=f"Option {i+1}", command=lambda idx=i: self.select_suggestion(idx))
+            button.grid(row=i, column=0, padx=5, pady=2, sticky="ew")
+            self.suggestions_frame.rowconfigure(i, weight=1)
+            self.suggestion_buttons.append(button)
+            
         self.textbox_frame = ttk.Frame(self.paned_window)
         self.textbox_frame.rowconfigure(0, weight=1)
         self.textbox_frame.columnconfigure(0, weight=1)
@@ -46,10 +65,8 @@ class SRTManagerApp:
         self.textbox_scrollbar.grid(row=0, column=1, sticky="ns")
         self.textbox.configure(yscrollcommand=self.textbox_scrollbar.set)
 
-        # Add Textbox frame to PanedWindow
         self.paned_window.add(self.textbox_frame)
-
-        # Buttons
+        
         self.buttons_frame = ttk.Frame(root)
         self.buttons_frame.grid(row=1, column=0, pady=5, sticky="ew")
         self.buttons_frame.columnconfigure(0, weight=1)
@@ -65,19 +82,157 @@ class SRTManagerApp:
         self.export_srt_button = ttk.Button(self.buttons_frame, text="Export SRT", command=self.export_srt)
         self.export_srt_button.grid(row=0, column=2, padx=5, sticky="ew")
 
-        self.srt_table.bind("<<TreeviewSelect>>", self.restore_textbox_focus)
-        self.srt_table.bind("<Double-1>", self.edit_table_cell)
-        
-        # Define Treeview tags
-        self.srt_table.tag_configure("mismatch", background="#CCFFCC")
-        
-        self.buttons_frame.columnconfigure(0, weight=1)
-        self.buttons_frame.columnconfigure(1, weight=1)
-        self.buttons_frame.columnconfigure(2, weight=1)
-
-        # Hotkey setup
         self.root.bind("<q>", self.handle_hotkey)
         self.root.bind("<w>", self.clear_selected_row)
+        self.root.bind("<e>", self.highlight_next_phrase)
+        self.root.bind("<r>", self.highlight_next_sentence)
+        self.root.bind("<t>", self.match_best_phrase)
+
+    def lazy_load_model(self):
+        """Lazy load the tokenizer and model when first required."""
+        if self.model is None or self.tokenizer is None:
+            from transformers import AutoTokenizer, AutoModel
+            import torch
+            self.tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-cased")
+            self.model = AutoModel.from_pretrained("bert-base-multilingual-cased")
+            self.model.eval()
+
+    def generate_phrases(self, text, start_pos):
+        """Generate phrases starting from a specific position in the text."""
+        remaining_text = text[start_pos:]
+        words = remaining_text.split()
+        max_length = min(32, len(words))
+        phrases = list(
+            takewhile(lambda phrase: "." not in phrase, 
+                (" ".join(words[:i]) for i in range(1, max_length + 1)))
+        )
+        return phrases
+
+    def match_best_phrase(self, event=None):
+        """Find and highlight the best matching phrase for the selected text."""
+        
+        self.lazy_load_model()  # Ensure the model is loaded
+
+        current_row_text, previous_text = self.get_current_and_previous_subs()
+        if not previous_text:
+            return
+
+        # Get text content from the textbox
+        text_content = self.textbox.get("1.0", tk.END).strip()
+        if not text_content:
+            return
+
+        flat_text_content = text_content.replace("\n", " ")
+
+        current_match = re.search(re.escape(previous_text), flat_text_content, re.DOTALL)
+        if not current_match:
+            return
+        start_pos = current_match.end()  # Позиция конца текущей строки
+
+        tgt_phrases = self.generate_phrases(flat_text_content, start_pos)
+
+        # Tokenize and compute embeddings
+        import torch
+        token_src = self.tokenizer([current_row_text], return_tensors="pt", padding=True, truncation=True)
+        token_tgt = self.tokenizer(tgt_phrases, return_tensors="pt", padding=True, truncation=True)
+
+        with torch.no_grad():
+            emb_src = self.model(**token_src).last_hidden_state.mean(dim=1)
+            emb_tgt = self.model(**token_tgt).last_hidden_state.mean(dim=1)
+
+        scores = torch.matmul(emb_src, emb_tgt.T).squeeze()
+        topk_scores, topk_indices = torch.topk(scores, k=3)
+        
+        print(f"Original: {current_row_text}")
+        for rank, (score, idx) in enumerate(zip(topk_scores.tolist(), topk_indices.tolist()), start=1):
+            print(f"Rank {rank}: {tgt_phrases[idx]} Score: {score:.2f}")
+        print()
+
+        best_match_idx = topk_indices.tolist()[0]
+        best_phrase = tgt_phrases[best_match_idx]
+
+        next_phrase_match = re.search(re.escape(best_phrase), flat_text_content[start_pos:], re.DOTALL)
+        if not next_phrase_match:
+            return
+
+        start_char_index = start_pos + next_phrase_match.start()
+        end_char_index = start_pos + next_phrase_match.end()
+
+        actual_start_index = self.flat_to_tk_index(text_content, start_char_index)
+        actual_end_index = self.flat_to_tk_index(text_content, end_char_index)
+
+        self.textbox.tag_remove(tk.SEL, "1.0", tk.END)
+        self.textbox.mark_set("insert", actual_start_index)
+        self.textbox.mark_set("anchor", actual_end_index)
+        self.textbox.tag_add(tk.SEL, actual_start_index, actual_end_index)
+        self.textbox.focus_set()
+        self.textbox.see(actual_start_index)
+
+    def flat_to_tk_index(self, text, char_index):
+        """Convert a flat character index to a Tkinter text index (line.char)."""
+        current_char_count = 0
+        for line_num, line in enumerate(text.split("\n"), start=1):
+            line_length = len(line) + 1  # +1 for the newline character
+            if current_char_count + line_length > char_index:
+                char_in_line = char_index - current_char_count
+                return f"{line_num}.{char_in_line}"
+            current_char_count += line_length
+        return f"end"
+            
+    def get_current_and_previous_subs(self):
+        selected_item = self.srt_table.selection()
+        if not selected_item:
+            return None, None
+
+        children = self.srt_table.get_children()
+        if not children:
+            return None, None
+
+        current_index = children.index(selected_item[0])
+        if current_index == 0:
+            return None, None
+            
+        previous_item = children[current_index - 1]
+        previous_text = self.srt_table.item(previous_item, "values")[1]
+        
+        current_item = children[current_index]
+        current_text = self.srt_table.item(current_item, "values")[1]
+        return current_text, previous_text
+        
+    def highlight_by_regexp(self, regexp_str):
+        _, selected_text = self.get_current_and_previous_subs()
+        if not selected_text:
+            return
+
+        text_content = self.textbox.get("1.0", tk.END)
+        current_match = re.search(re.escape(selected_text), text_content, re.DOTALL)
+        if not current_match:
+            return
+
+        start_pos = current_match.end()
+        next_phrase_match = re.search(regexp_str, text_content[start_pos:], re.DOTALL)
+        if not next_phrase_match:
+            return
+
+        next_phrase = next_phrase_match.group(1)
+        start_char_index = start_pos + next_phrase_match.start()
+        end_char_index = start_pos + next_phrase_match.end()
+
+        start_index = self.textbox.index(f"1.0+{start_char_index}c")
+        end_index = self.textbox.index(f"1.0+{end_char_index}c")
+
+        self.textbox.tag_remove(tk.SEL, "1.0", tk.END)
+        self.textbox.mark_set("insert", start_index)
+        self.textbox.mark_set("anchor", end_index)
+        self.textbox.tag_add(tk.SEL, start_index, end_index)
+        self.textbox.focus_set()
+        self.textbox.see(start_index)
+
+    def highlight_next_phrase(self, event=None):
+        self.highlight_by_regexp(r"(.*?[.!?,])")
+        
+    def highlight_next_sentence(self, event=None):
+        self.highlight_by_regexp(r"(.*?[.!?])")
         
     def restore_textbox_focus(self, event):
         if self.textbox.tag_ranges(tk.SEL):
@@ -146,9 +301,124 @@ class SRTManagerApp:
             self.srt_table.selection_set(children[next_index])
             self.srt_table.see(children[next_index])
             
+    def remove_duplicates_preserve_order(self, items):
+        """Remove duplicates from the list while preserving the order."""
+        seen = set()
+        return [x for x in items if not (x in seen or seen.add(x))]
+            
     def handle_hotkey(self, event=None):
         self.replace_selected_line()
         self.select_next_row()
+        self.suggestions = []
+
+        phrase_result = self.find_by_regexp(r"(.*?[.!?,])")
+        if phrase_result:
+            self.suggestions.append(phrase_result)
+
+        sentence_result = self.find_by_regexp(r"(.*?[.!?])")
+        if sentence_result:
+            self.suggestions.append(sentence_result)
+
+        best_phrases = self.get_topk_best_phrases(k=3)
+        for phrase in best_phrases:
+            self.suggestions.append(phrase)
+            
+        self.suggestions = self.remove_duplicates_preserve_order(self.suggestions)
+        self.update_suggestion_buttons()
+
+        #print("\nPossible continuations:")
+        #for result in results:
+        #    print(result)
+        
+    def update_suggestion_buttons(self):
+        """Update buttons with the suggestions."""
+        for i, button in enumerate(self.suggestion_buttons):
+            if i < len(self.suggestions):
+                button.config(text=self.suggestions[i], state=tk.NORMAL)
+            else:
+                button.config(text="", state=tk.DISABLED)
+                
+    def select_suggestion(self, idx):
+        """Handle selection of a suggestion by index."""
+        if idx >= len(self.suggestions):
+            return
+
+        suggestion = self.suggestions[idx]
+        text_content = self.textbox.get("1.0", tk.END).strip()
+        match = re.search(re.escape(suggestion), text_content, re.DOTALL)
+        if not match:
+            return
+
+        start_char_index = match.start()
+        end_char_index = match.end()
+
+        start_index = self.textbox.index(f"1.0+{start_char_index}c")
+        end_index = self.textbox.index(f"1.0+{end_char_index}c")
+
+        self.textbox.tag_remove(tk.SEL, "1.0", tk.END)
+        self.textbox.mark_set("insert", start_index)
+        self.textbox.mark_set("anchor", end_index)
+        self.textbox.tag_add(tk.SEL, start_index, end_index)
+        self.textbox.focus_set()
+        self.textbox.see(start_index)
+        
+        self.handle_hotkey()
+            
+    def find_by_regexp(self, regexp_str):
+        """Helper method to find a match using a regular expression."""
+        _, selected_text = self.get_current_and_previous_subs()
+        if not selected_text:
+            return None
+
+        text_content = self.textbox.get("1.0", tk.END)
+        current_match = re.search(re.escape(selected_text), text_content, re.DOTALL)
+        if not current_match:
+            return None
+
+        start_pos = current_match.end()
+        next_phrase_match = re.search(regexp_str, text_content[start_pos:], re.DOTALL)
+        if next_phrase_match:
+            return next_phrase_match.group(1).strip()
+        return None
+
+    def get_topk_best_phrases(self, k=3):
+        """Helper method to get top-k best phrases from match_best_phrase logic."""
+        self.lazy_load_model()  # Ensure the model is loaded
+
+        current_row_text, previous_text = self.get_current_and_previous_subs()
+        if not previous_text:
+            return []
+
+        # Get text content from the textbox
+        text_content = self.textbox.get("1.0", tk.END).strip()
+        if not text_content:
+            return []
+
+        flat_text_content = text_content.replace("\n", " ")
+        current_match = re.search(re.escape(previous_text), flat_text_content, re.DOTALL)
+        if not current_match:
+            return []
+        start_pos = current_match.end()
+
+        # Generate candidate phrases starting from the end of the selected text
+        tgt_phrases = self.generate_phrases(flat_text_content, start_pos)
+
+        # Tokenize and compute embeddings
+        import torch
+        token_src = self.tokenizer([current_row_text], return_tensors="pt", padding=True, truncation=True)
+        token_tgt = self.tokenizer(tgt_phrases, return_tensors="pt", padding=True, truncation=True)
+
+        with torch.no_grad():
+            emb_src = self.model(**token_src).last_hidden_state.mean(dim=1)
+            emb_tgt = self.model(**token_tgt).last_hidden_state.mean(dim=1)
+
+        scores = torch.matmul(emb_src, emb_tgt.T).squeeze()
+        k = min(k, len(scores))
+        topk_scores, topk_indices = torch.topk(scores, k=k)
+
+        # Extract top-k phrases
+        topk_phrases = [tgt_phrases[idx] for idx in topk_indices.tolist()]
+        return topk_phrases
         
     def clear_selected_row(self, event=None):
         selected_item = self.srt_table.selection()
