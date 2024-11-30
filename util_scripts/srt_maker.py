@@ -2,14 +2,23 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import re
 from itertools import takewhile
+from dataclasses import dataclass
 
 REGEXP_PHRASE = r"(.*?[.!?,;:])"
 REGEXP_SENTENCE = r"(.*?[.!?])"
 
+AI_SUGGESTION_COUNT = 6
+BUTTONS_SUGGESTION_COUNT = AI_SUGGESTION_COUNT + 2
+    
+@dataclass
+class Suggestion:
+    phrase: str
+    score: float
+
 class SRTManagerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("SRT Manager [q - replace selected, w - clear selected, e - select next phrase, r - select next sentence, t - select next phrase with AI]")
+        self.root.title("SRT Manager [q - replace selected, w - clear selected, e - select next phrase, r - select next sentence]")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=0)
@@ -49,7 +58,7 @@ class SRTManagerApp:
         self.paned_window.add(self.suggestions_frame)
         #self.suggestions_frame.grid(row=2, column=0, pady=5, sticky="nsew")
         self.suggestion_buttons = []
-        for i in range(5):
+        for i in range(BUTTONS_SUGGESTION_COUNT):
             button = ttk.Button(self.suggestions_frame, text=f"Option {i+1}", command=lambda idx=i: self.select_suggestion(idx))
             button.grid(row=i, column=0, padx=5, pady=2, sticky="ew")
             self.suggestions_frame.rowconfigure(i, weight=1)
@@ -89,7 +98,6 @@ class SRTManagerApp:
         self.root.bind("<w>", self.clear_selected_row)
         self.root.bind("<e>", self.highlight_next_phrase)
         self.root.bind("<r>", self.highlight_next_sentence)
-        self.root.bind("<t>", self.match_best_phrase)
 
     def lazy_load_model(self):
         """Lazy load the tokenizer and model when first required."""
@@ -110,66 +118,6 @@ class SRTManagerApp:
                 (" ".join(words[:i]) for i in range(1, max_length + 1)))
         )
         return phrases
-
-    def match_best_phrase(self, event=None):
-        """Find and highlight the best matching phrase for the selected text."""
-        
-        self.lazy_load_model()  # Ensure the model is loaded
-
-        current_row_text, previous_text = self.get_current_and_previous_subs()
-        if not previous_text:
-            return
-
-        # Get text content from the textbox
-        text_content = self.textbox.get("1.0", tk.END).strip()
-        if not text_content:
-            return
-
-        flat_text_content = text_content.replace("\n", " ")
-
-        current_match = re.search(re.escape(previous_text), flat_text_content, re.DOTALL)
-        if not current_match:
-            return
-        start_pos = current_match.end()  # Позиция конца текущей строки
-
-        tgt_phrases = self.generate_phrases(flat_text_content, start_pos)
-
-        # Tokenize and compute embeddings
-        import torch
-        token_src = self.tokenizer([current_row_text], return_tensors="pt", padding=True, truncation=True)
-        token_tgt = self.tokenizer(tgt_phrases, return_tensors="pt", padding=True, truncation=True)
-
-        with torch.no_grad():
-            emb_src = self.model(**token_src).last_hidden_state.mean(dim=1)
-            emb_tgt = self.model(**token_tgt).last_hidden_state.mean(dim=1)
-
-        scores = torch.matmul(emb_src, emb_tgt.T).squeeze()
-        topk_scores, topk_indices = torch.topk(scores, k=3)
-        
-        print(f"Original: {current_row_text}")
-        for rank, (score, idx) in enumerate(zip(topk_scores.tolist(), topk_indices.tolist()), start=1):
-            print(f"Rank {rank}: {tgt_phrases[idx]} Score: {score:.2f}")
-        print()
-
-        best_match_idx = topk_indices.tolist()[0]
-        best_phrase = tgt_phrases[best_match_idx]
-
-        next_phrase_match = re.search(re.escape(best_phrase), flat_text_content[start_pos:], re.DOTALL)
-        if not next_phrase_match:
-            return
-
-        start_char_index = start_pos + next_phrase_match.start()
-        end_char_index = start_pos + next_phrase_match.end()
-
-        actual_start_index = self.flat_to_tk_index(text_content, start_char_index)
-        actual_end_index = self.flat_to_tk_index(text_content, end_char_index)
-
-        self.textbox.tag_remove(tk.SEL, "1.0", tk.END)
-        self.textbox.mark_set("insert", actual_start_index)
-        self.textbox.mark_set("anchor", actual_end_index)
-        self.textbox.tag_add(tk.SEL, actual_start_index, actual_end_index)
-        self.textbox.focus_set()
-        self.textbox.see(actual_start_index)
 
     def flat_to_tk_index(self, text, char_index):
         """Convert a flat character index to a Tkinter text index (line.char)."""
@@ -247,18 +195,15 @@ class SRTManagerApp:
         if not file_path:
             return
         
-        # Load SRT content
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # Parse SRT and store lines with timings
         self.srt_data = []
         matches = re.findall(r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3})\n((?:.+\n?)+)", content)
         for _, timing, text in matches:
             text = text.strip().replace("\n", " ")
             self.srt_data.append({"timing": timing, "text": text, "selected_text": text})
 
-        # Display text content in the table
         self.srt_table.delete(*self.srt_table.get_children())
 
         for entry in self.srt_data:
@@ -304,11 +249,6 @@ class SRTManagerApp:
             self.srt_table.selection_set(children[next_index])
             self.srt_table.see(children[next_index])
             
-    def remove_duplicates_preserve_order(self, items):
-        """Remove duplicates from the list while preserving the order."""
-        seen = set()
-        return [x for x in items if not (x in seen or seen.add(x))]
-            
     def handle_hotkey(self, event=None):
         self.replace_selected_line()
         self.select_next_row()
@@ -316,28 +256,23 @@ class SRTManagerApp:
 
         phrase_result = self.find_by_regexp(REGEXP_PHRASE)
         if phrase_result:
-            self.suggestions.append(phrase_result)
+            self.suggestions.append(Suggestion(phrase = phrase_result, score = 100.0))
 
         sentence_result = self.find_by_regexp(REGEXP_SENTENCE)
         if sentence_result:
-            self.suggestions.append(sentence_result)
+            self.suggestions.append(Suggestion(phrase = sentence_result, score = 100.0))
 
-        best_phrases = self.get_topk_best_phrases(k=3)
-        for phrase in best_phrases:
-            self.suggestions.append(phrase)
+        best_suggestions = self.get_topk_best_phrases(k=AI_SUGGESTION_COUNT)
+        for suggestion in best_suggestions:
+            if suggestion.phrase != phrase_result and suggestion.phrase != sentence_result:
+                self.suggestions.append(suggestion)
             
-        self.suggestions = self.remove_duplicates_preserve_order(self.suggestions)
         self.update_suggestion_buttons()
-
-        #print("\nPossible continuations:")
-        #for result in results:
-        #    print(result)
         
     def update_suggestion_buttons(self):
-        """Update buttons with the suggestions."""
         for i, button in enumerate(self.suggestion_buttons):
             if i < len(self.suggestions):
-                button.config(text=self.suggestions[i], state=tk.NORMAL)
+                button.config(text=f"{self.suggestions[i].phrase} [{self.suggestions[i].score:.2f}]", state=tk.NORMAL)
             else:
                 button.config(text="", state=tk.DISABLED)
                 
@@ -346,7 +281,7 @@ class SRTManagerApp:
         if idx >= len(self.suggestions):
             return
 
-        suggestion = self.suggestions[idx]
+        suggestion = self.suggestions[idx].phrase
         text_content = self.textbox.get("1.0", tk.END).strip()
         match = re.search(re.escape(suggestion), text_content, re.DOTALL)
         if not match:
@@ -384,8 +319,7 @@ class SRTManagerApp:
             return next_phrase_match.group(1).strip()
         return None
 
-    def get_topk_best_phrases(self, k=3):
-        """Helper method to get top-k best phrases from match_best_phrase logic."""
+    def get_topk_best_phrases(self, k):
         self.lazy_load_model()  # Ensure the model is loaded
 
         current_row_text, previous_text = self.get_current_and_previous_subs()
@@ -419,8 +353,7 @@ class SRTManagerApp:
         k = min(k, len(scores))
         topk_scores, topk_indices = torch.topk(scores, k=k)
 
-        # Extract top-k phrases
-        topk_phrases = [tgt_phrases[idx] for idx in topk_indices.tolist()]
+        topk_phrases = [Suggestion(phrase = tgt_phrases[idx], score = score) for (idx, score) in zip(topk_indices.tolist(), topk_scores.tolist())]
         return topk_phrases
         
     def clear_selected_row(self, event=None):
