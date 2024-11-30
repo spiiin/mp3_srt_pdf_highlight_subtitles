@@ -3,6 +3,9 @@ from tkinter import ttk, filedialog, messagebox
 import re
 from itertools import takewhile
 
+REGEXP_PHRASE = r"(.*?[.!?,;:])"
+REGEXP_SENTENCE = r"(.*?[.!?])"
+
 class SRTManagerApp:
     def __init__(self, root):
         self.root = root
@@ -229,10 +232,10 @@ class SRTManagerApp:
         self.textbox.see(start_index)
 
     def highlight_next_phrase(self, event=None):
-        self.highlight_by_regexp(r"(.*?[.!?,])")
+        self.highlight_by_regexp(REGEXP_PHRASE)
         
     def highlight_next_sentence(self, event=None):
-        self.highlight_by_regexp(r"(.*?[.!?])")
+        self.highlight_by_regexp(REGEXP_SENTENCE)
         
     def restore_textbox_focus(self, event):
         if self.textbox.tag_ranges(tk.SEL):
@@ -311,11 +314,11 @@ class SRTManagerApp:
         self.select_next_row()
         self.suggestions = []
 
-        phrase_result = self.find_by_regexp(r"(.*?[.!?,])")
+        phrase_result = self.find_by_regexp(REGEXP_PHRASE)
         if phrase_result:
             self.suggestions.append(phrase_result)
 
-        sentence_result = self.find_by_regexp(r"(.*?[.!?])")
+        sentence_result = self.find_by_regexp(REGEXP_SENTENCE)
         if sentence_result:
             self.suggestions.append(sentence_result)
 
