@@ -7,7 +7,7 @@ from dataclasses import dataclass
 REGEXP_PHRASE = r"(.*?[.!?,;:])"
 REGEXP_SENTENCE = r"(.*?[.!?])"
 
-AI_SUGGESTION_COUNT = 6
+AI_SUGGESTION_COUNT = 3
 BUTTONS_SUGGESTION_COUNT = AI_SUGGESTION_COUNT + 2
     
 @dataclass
@@ -57,12 +57,15 @@ class SRTManagerApp:
         self.suggestions_frame = ttk.Frame(root)
         self.paned_window.add(self.suggestions_frame)
         #self.suggestions_frame.grid(row=2, column=0, pady=5, sticky="nsew")
+        self.suggestions_frame.columnconfigure(0, weight=1)
         self.suggestion_buttons = []
         for i in range(BUTTONS_SUGGESTION_COUNT):
-            button = ttk.Button(self.suggestions_frame, text=f"Option {i+1}", command=lambda idx=i: self.select_suggestion(idx))
+            #button = ttk.Button(self.suggestions_frame, text=f"Option {i+1}", command=lambda idx=i: self.select_suggestion(idx))
+            button = self.create_text_button(self.suggestions_frame, f"Option {i+1}", lambda idx=i: self.select_suggestion(idx))
             button.grid(row=i, column=0, padx=5, pady=2, sticky="ew")
             self.suggestions_frame.rowconfigure(i, weight=1)
-            self.suggestion_buttons.append(button)
+            self.suggestion_buttons.append(button)  
+            
             
         self.textbox_frame = ttk.Frame(self.paned_window)
         self.textbox_frame.rowconfigure(0, weight=1)
@@ -98,6 +101,33 @@ class SRTManagerApp:
         self.root.bind("<w>", self.clear_selected_row)
         self.root.bind("<e>", self.highlight_next_phrase)
         self.root.bind("<r>", self.highlight_next_sentence)
+        
+    def create_text_button(self, parent, text, command):
+        """Создает текстовый виджет с поведением кнопки."""
+        button = tk.Text(parent, height=1, width=30, bg="lightblue", fg="black", font=("Arial", 12), relief="raised", bd=2, wrap="none")
+        button.insert("1.0", text)
+        button.configure(state="normal")  # Разрешаем выделение текста
+        button.is_pressed = False
+        button.callback = command
+
+        def on_press(event):
+            button.is_pressed = True
+
+        def on_release(event):
+            if button.is_pressed:
+                x, y = event.x, event.y
+                width, height = button.winfo_width(), button.winfo_height()
+                if 0 <= x <= width and 0 <= y <= height:
+                    button.callback()
+            button.is_pressed = False
+
+        def on_leave(event):
+            button.is_pressed = False
+
+        button.bind("<ButtonPress-1>", on_press)
+        button.bind("<ButtonRelease-1>", on_release)
+        button.bind("<Leave>", on_leave)
+        return button
 
     def lazy_load_model(self):
         """Lazy load the tokenizer and model when first required."""
@@ -143,11 +173,12 @@ class SRTManagerApp:
         if current_index == 0:
             return None, None
             
+        #TODO: previous_item/current_item need to be argument of function
         previous_item = children[current_index - 1]
-        previous_text = self.srt_table.item(previous_item, "values")[1]
+        previous_text = self.srt_table.item(previous_item, "values")[1] #get previous_item translated - to search it in text
         
         current_item = children[current_index]
-        current_text = self.srt_table.item(current_item, "values")[1]
+        current_text = self.srt_table.item(current_item, "values")[0] #get current_item non-translated - to match it with ai
         return current_text, previous_text
         
     def highlight_by_regexp(self, regexp_str):
@@ -259,7 +290,7 @@ class SRTManagerApp:
             self.suggestions.append(Suggestion(phrase = phrase_result, score = 100.0))
 
         sentence_result = self.find_by_regexp(REGEXP_SENTENCE)
-        if sentence_result:
+        if sentence_result and sentence_result != phrase_result:
             self.suggestions.append(Suggestion(phrase = sentence_result, score = 100.0))
 
         best_suggestions = self.get_topk_best_phrases(k=AI_SUGGESTION_COUNT)
@@ -272,16 +303,32 @@ class SRTManagerApp:
     def update_suggestion_buttons(self):
         for i, button in enumerate(self.suggestion_buttons):
             if i < len(self.suggestions):
-                button.config(text=f"{self.suggestions[i].phrase} [{self.suggestions[i].score:.2f}]", state=tk.NORMAL)
+                button.configure(state="normal")
+                button.delete("1.0", tk.END)
+                button.insert("1.0", f"{self.suggestions[i].phrase} [{self.suggestions[i].score:.2f}]")
+                button.configure(state="disabled") 
             else:
-                button.config(text="", state=tk.DISABLED)
+                button.configure(state="normal")
+                button.delete("1.0", tk.END)
+                button.insert("1.0", "")
+                button.configure(state="disabled")
                 
     def select_suggestion(self, idx):
         """Handle selection of a suggestion by index."""
         if idx >= len(self.suggestions):
             return
 
-        suggestion = self.suggestions[idx].phrase
+        button = self.suggestion_buttons[idx]
+        try:
+            selected_text = button.get("sel.first", "sel.last").strip()
+            if selected_text:
+                suggestion = selected_text
+            else:
+                suggestion = self.suggestions[idx].phrase
+        except tk.TclError:
+            suggestion = self.suggestions[idx].phrase
+        
+        
         text_content = self.textbox.get("1.0", tk.END).strip()
         match = re.search(re.escape(suggestion), text_content, re.DOTALL)
         if not match:
@@ -346,10 +393,16 @@ class SRTManagerApp:
         token_tgt = self.tokenizer(tgt_phrases, return_tensors="pt", padding=True, truncation=True)
 
         with torch.no_grad():
-            emb_src = self.model(**token_src).last_hidden_state.mean(dim=1)
-            emb_tgt = self.model(**token_tgt).last_hidden_state.mean(dim=1)
+            #emb_src = self.model(**token_src).last_hidden_state.mean(dim=1)
+            #emb_tgt = self.model(**token_tgt).last_hidden_state.mean(dim=1)
+            emb_src = self.model(**token_src).last_hidden_state[:, 0, :] #full token instead of mean
+            emb_tgt = self.model(**token_tgt).last_hidden_state[:, 0, :]
 
         scores = torch.matmul(emb_src, emb_tgt.T).squeeze()
+        
+        if scores.dim() == 0:
+            return []
+        
         k = min(k, len(scores))
         topk_scores, topk_indices = torch.topk(scores, k=k)
 
