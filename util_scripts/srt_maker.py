@@ -8,12 +8,41 @@ REGEXP_PHRASE = r"(.*?[.!?,;:])"
 REGEXP_SENTENCE = r"(.*?[.!?])"
 
 AI_SUGGESTION_COUNT = 3
-BUTTONS_SUGGESTION_COUNT = AI_SUGGESTION_COUNT + 2
+BUTTONS_SUGGESTION_COUNT = AI_SUGGESTION_COUNT + 3
+
+@dataclass
+class Phrase:
+    text: str
+    start_idx: int
+    end_idx: int
     
 @dataclass
 class Suggestion:
-    phrase: str
+    phrase: Phrase
     score: float
+    
+def generate_phrases(text, start_pos):
+    # Разбиение текста на слова с запоминанием индексов
+    words_with_indices = [(m.group(), m.start(), m.end()) for m in re.finditer(r'\S+', text[start_pos:])]
+    max_length = min(32, len(words_with_indices))
+    
+    phrases = []
+    for i in range(1, max_length + 1):
+        # Создаем фразу из первых i слов
+        phrase_text = " ".join(word for word, _, _ in words_with_indices[:i])
+        start_idx = words_with_indices[0][1] + start_pos  # Начало первой фразы
+        end_idx = words_with_indices[i - 1][2] + start_pos  # Конец последнего слова текущей фразы
+        
+        # Добавляем объект Phrase в список
+        phrases.append(Phrase(text=phrase_text, start_idx=start_idx, end_idx=end_idx))
+        
+        # Останавливаем генерацию, если последнее слово содержит точку
+        if "." in words_with_indices[i - 1][0]:
+            break
+
+    # Возвращаем список фраз и весь текст до ограничения max_length
+    truncated_text = " ".join(word for word, _, _ in words_with_indices[:max_length])
+    return phrases, truncated_text
 
 class SRTManagerApp:
     def __init__(self, root):
@@ -60,12 +89,10 @@ class SRTManagerApp:
         self.suggestions_frame.columnconfigure(0, weight=1)
         self.suggestion_buttons = []
         for i in range(BUTTONS_SUGGESTION_COUNT):
-            #button = ttk.Button(self.suggestions_frame, text=f"Option {i+1}", command=lambda idx=i: self.select_suggestion(idx))
             button = self.create_text_button(self.suggestions_frame, f"Option {i+1}", lambda idx=i: self.select_suggestion(idx))
             button.grid(row=i, column=0, padx=5, pady=2, sticky="ew")
             self.suggestions_frame.rowconfigure(i, weight=1)
-            self.suggestion_buttons.append(button)  
-            
+            self.suggestion_buttons.append(button)
             
         self.textbox_frame = ttk.Frame(self.paned_window)
         self.textbox_frame.rowconfigure(0, weight=1)
@@ -106,7 +133,7 @@ class SRTManagerApp:
         """Создает текстовый виджет с поведением кнопки."""
         button = tk.Text(parent, height=1, width=30, bg="lightblue", fg="black", font=("Arial", 12), relief="raised", bd=2, wrap="none")
         button.insert("1.0", text)
-        button.configure(state="normal")  # Разрешаем выделение текста
+        button.configure(state="normal")
         button.is_pressed = False
         button.callback = command
 
@@ -137,28 +164,6 @@ class SRTManagerApp:
             self.tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-cased")
             self.model = AutoModel.from_pretrained("bert-base-multilingual-cased")
             self.model.eval()
-
-    def generate_phrases(self, text, start_pos):
-        """Generate phrases starting from a specific position in the text."""
-        remaining_text = text[start_pos:]
-        words = remaining_text.split()
-        max_length = min(32, len(words))
-        phrases = list(
-            takewhile(lambda phrase: "." not in phrase, 
-                (" ".join(words[:i]) for i in range(1, max_length + 1)))
-        )
-        return phrases
-
-    def flat_to_tk_index(self, text, char_index):
-        """Convert a flat character index to a Tkinter text index (line.char)."""
-        current_char_count = 0
-        for line_num, line in enumerate(text.split("\n"), start=1):
-            line_length = len(line) + 1  # +1 for the newline character
-            if current_char_count + line_length > char_index:
-                char_in_line = char_index - current_char_count
-                return f"{line_num}.{char_in_line}"
-            current_char_count += line_length
-        return f"end"
             
     def get_current_and_previous_subs(self):
         selected_item = self.srt_table.selection()
@@ -259,7 +264,7 @@ class SRTManagerApp:
         if not selected_item:
             return
         try:
-            selected_text = self.textbox.get("sel.first", "sel.last").strip().replace("\n", " ")
+            selected_text = self.textbox.get("sel.first", "sel.last")#.strip()#.replace("\n", " ")
         except tk.TclError:
             return
 
@@ -287,15 +292,15 @@ class SRTManagerApp:
 
         phrase_result = self.find_by_regexp(REGEXP_PHRASE)
         if phrase_result:
-            self.suggestions.append(Suggestion(phrase = phrase_result, score = 100.0))
+            self.suggestions.append(Suggestion(phrase = Phrase(phrase_result,0,0), score = 100.0))
 
         sentence_result = self.find_by_regexp(REGEXP_SENTENCE)
         if sentence_result and sentence_result != phrase_result:
-            self.suggestions.append(Suggestion(phrase = sentence_result, score = 100.0))
+            self.suggestions.append(Suggestion(phrase = Phrase(sentence_result,0,0), score = 100.0))
 
         best_suggestions = self.get_topk_best_phrases(k=AI_SUGGESTION_COUNT)
         for suggestion in best_suggestions:
-            if suggestion.phrase != phrase_result and suggestion.phrase != sentence_result:
+            if suggestion.phrase.text != phrase_result and suggestion.phrase.text != sentence_result:
                 self.suggestions.append(suggestion)
             
         self.update_suggestion_buttons()
@@ -305,8 +310,14 @@ class SRTManagerApp:
             if i < len(self.suggestions):
                 button.configure(state="normal")
                 button.delete("1.0", tk.END)
-                button.insert("1.0", f"{self.suggestions[i].phrase} [{self.suggestions[i].score:.2f}]")
-                button.configure(state="disabled") 
+                button.insert("1.0", f"{self.suggestions[i].phrase.text}")
+                button.configure(state="disabled")
+                
+                suggestion_text = self.suggestions[i].phrase.text
+                button.configure(state="normal")
+                button.delete("1.0", tk.END)
+                button.insert("1.0", suggestion_text)
+                button.configure(state="disabled")
             else:
                 button.configure(state="normal")
                 button.delete("1.0", tk.END)
@@ -314,19 +325,18 @@ class SRTManagerApp:
                 button.configure(state="disabled")
                 
     def select_suggestion(self, idx):
-        """Handle selection of a suggestion by index."""
         if idx >= len(self.suggestions):
             return
 
         button = self.suggestion_buttons[idx]
         try:
-            selected_text = button.get("sel.first", "sel.last").strip()
+            selected_text = button.get("sel.first", "sel.last")#.strip()
             if selected_text:
                 suggestion = selected_text
             else:
-                suggestion = self.suggestions[idx].phrase
+                suggestion = self.suggestions[idx].phrase.text
         except tk.TclError:
-            suggestion = self.suggestions[idx].phrase
+            suggestion = self.suggestions[idx].phrase.text
         
         
         text_content = self.textbox.get("1.0", tk.END).strip()
@@ -365,32 +375,34 @@ class SRTManagerApp:
         if next_phrase_match:
             return next_phrase_match.group(1).strip()
         return None
+        
+    def get_text_and_pos_after_selected(self, previous_text):
+        text_content = self.textbox.get("1.0", tk.END)
+        if not text_content:
+            return []
+
+        current_match = re.search(re.escape(previous_text), text_content, re.DOTALL)
+        if not current_match:
+            return []
+        start_pos = current_match.end()
+        return text_content, start_pos
 
     def get_topk_best_phrases(self, k):
-        self.lazy_load_model()  # Ensure the model is loaded
+        self.lazy_load_model()
 
         current_row_text, previous_text = self.get_current_and_previous_subs()
         if not previous_text:
             return []
 
-        # Get text content from the textbox
-        text_content = self.textbox.get("1.0", tk.END).strip()
-        if not text_content:
-            return []
-
-        flat_text_content = text_content.replace("\n", " ")
-        current_match = re.search(re.escape(previous_text), flat_text_content, re.DOTALL)
-        if not current_match:
-            return []
-        start_pos = current_match.end()
+        text_content, start_pos = self.get_text_and_pos_after_selected(previous_text)
 
         # Generate candidate phrases starting from the end of the selected text
-        tgt_phrases = self.generate_phrases(flat_text_content, start_pos)
+        tgt_phrases, full_phrase = generate_phrases(text_content, start_pos)
 
         # Tokenize and compute embeddings
         import torch
         token_src = self.tokenizer([current_row_text], return_tensors="pt", padding=True, truncation=True)
-        token_tgt = self.tokenizer(tgt_phrases, return_tensors="pt", padding=True, truncation=True)
+        token_tgt = self.tokenizer([phrase.text for phrase in tgt_phrases], return_tensors="pt", padding=True, truncation=True)
 
         with torch.no_grad():
             #emb_src = self.model(**token_src).last_hidden_state.mean(dim=1)
@@ -407,6 +419,8 @@ class SRTManagerApp:
         topk_scores, topk_indices = torch.topk(scores, k=k)
 
         topk_phrases = [Suggestion(phrase = tgt_phrases[idx], score = score) for (idx, score) in zip(topk_indices.tolist(), topk_scores.tolist())]
+        
+        topk_phrases.append(Suggestion(phrase = Phrase(full_phrase,0,0), score = 100.0))
         return topk_phrases
         
     def clear_selected_row(self, event=None):
