@@ -22,25 +22,20 @@ class Suggestion:
     score: float
     
 def generate_phrases(text, start_pos):
-    # Разбиение текста на слова с запоминанием индексов
     words_with_indices = [(m.group(), m.start(), m.end()) for m in re.finditer(r'\S+', text[start_pos:])]
     max_length = min(32, len(words_with_indices))
     
     phrases = []
     for i in range(1, max_length + 1):
-        # Создаем фразу из первых i слов
         phrase_text = " ".join(word for word, _, _ in words_with_indices[:i])
-        start_idx = words_with_indices[0][1] + start_pos  # Начало первой фразы
-        end_idx = words_with_indices[i - 1][2] + start_pos  # Конец последнего слова текущей фразы
-        
-        # Добавляем объект Phrase в список
+        start_idx = words_with_indices[0][1] + start_pos
+        end_idx = words_with_indices[i - 1][2] + start_pos
+
         phrases.append(Phrase(text=phrase_text, start_idx=start_idx, end_idx=end_idx))
         
-        # Останавливаем генерацию, если последнее слово содержит точку
         if "." in words_with_indices[i - 1][0]:
             break
 
-    # Возвращаем список фраз и весь текст до ограничения max_length
     truncated_text = " ".join(word for word, _, _ in words_with_indices[:max_length])
     return phrases, truncated_text
 
@@ -259,14 +254,18 @@ class SRTManagerApp:
         self.textbox.insert("1.0", text)
         self.textbox.config(state="disabled")
 
-    def replace_selected_line(self):
+    def replace_selected_line(self, suggestion_text= ""):
         selected_item = self.srt_table.selection()
         if not selected_item:
             return
-        try:
-            selected_text = self.textbox.get("sel.first", "sel.last")#.strip()#.replace("\n", " ")
-        except tk.TclError:
-            return
+            
+        if suggestion_text != "":
+            selected_text = suggestion_text
+        else:
+            try:
+                selected_text = self.textbox.get("sel.first", "sel.last").strip().replace("\n", " ")
+            except tk.TclError:
+                return
 
         for item in selected_item:
             values = self.srt_table.item(item, "values")
@@ -285,8 +284,8 @@ class SRTManagerApp:
             self.srt_table.selection_set(children[next_index])
             self.srt_table.see(children[next_index])
             
-    def handle_hotkey(self, event=None):
-        self.replace_selected_line()
+    def handle_hotkey(self, event=None, selected_text=""):
+        self.replace_selected_line(selected_text)
         self.select_next_row()
         self.suggestions = []
 
@@ -299,9 +298,10 @@ class SRTManagerApp:
             self.suggestions.append(Suggestion(phrase = Phrase(sentence_result,0,0), score = 100.0))
 
         best_suggestions = self.get_topk_best_phrases(k=AI_SUGGESTION_COUNT)
-        for suggestion in best_suggestions:
-            if suggestion.phrase.text != phrase_result and suggestion.phrase.text != sentence_result:
-                self.suggestions.append(suggestion)
+        if best_suggestions:
+            for suggestion in best_suggestions:
+                if suggestion.phrase.text != phrase_result and suggestion.phrase.text != sentence_result:
+                    self.suggestions.append(suggestion)
             
         self.update_suggestion_buttons()
         
@@ -330,37 +330,34 @@ class SRTManagerApp:
 
         button = self.suggestion_buttons[idx]
         try:
-            selected_text = button.get("sel.first", "sel.last")#.strip()
+            selected_text = button.get("sel.first", "sel.last").strip()
             if selected_text:
-                suggestion = selected_text
+                suggestion_text = selected_text
             else:
-                suggestion = self.suggestions[idx].phrase.text
+                suggestion_text = self.suggestions[idx].phrase.text
         except tk.TclError:
-            suggestion = self.suggestions[idx].phrase.text
+            suggestion_text = self.suggestions[idx].phrase.text
         
         
         text_content = self.textbox.get("1.0", tk.END).strip()
-        match = re.search(re.escape(suggestion), text_content, re.DOTALL)
-        if not match:
-            return
+        match = re.search(re.escape(suggestion_text), text_content, re.DOTALL)
+        if match:
+            start_char_index = match.start()
+            end_char_index = match.end()
 
-        start_char_index = match.start()
-        end_char_index = match.end()
+            start_index = self.textbox.index(f"1.0+{start_char_index}c")
+            end_index = self.textbox.index(f"1.0+{end_char_index}c")
 
-        start_index = self.textbox.index(f"1.0+{start_char_index}c")
-        end_index = self.textbox.index(f"1.0+{end_char_index}c")
-
-        self.textbox.tag_remove(tk.SEL, "1.0", tk.END)
-        self.textbox.mark_set("insert", start_index)
-        self.textbox.mark_set("anchor", end_index)
-        self.textbox.tag_add(tk.SEL, start_index, end_index)
-        self.textbox.focus_set()
-        self.textbox.see(start_index)
+            self.textbox.tag_remove(tk.SEL, "1.0", tk.END)
+            self.textbox.mark_set("insert", start_index)
+            self.textbox.mark_set("anchor", end_index)
+            self.textbox.tag_add(tk.SEL, start_index, end_index)
+            self.textbox.focus_set()
+            self.textbox.see(start_index)
         
-        self.handle_hotkey()
+        self.handle_hotkey(selected_text=suggestion_text)
             
     def find_by_regexp(self, regexp_str):
-        """Helper method to find a match using a regular expression."""
         _, selected_text = self.get_current_and_previous_subs()
         if not selected_text:
             return None
@@ -379,11 +376,11 @@ class SRTManagerApp:
     def get_text_and_pos_after_selected(self, previous_text):
         text_content = self.textbox.get("1.0", tk.END)
         if not text_content:
-            return []
+            return None, None
 
         current_match = re.search(re.escape(previous_text), text_content, re.DOTALL)
         if not current_match:
-            return []
+            return None, None
         start_pos = current_match.end()
         return text_content, start_pos
 
@@ -392,12 +389,16 @@ class SRTManagerApp:
 
         current_row_text, previous_text = self.get_current_and_previous_subs()
         if not previous_text:
-            return []
+            return None
 
         text_content, start_pos = self.get_text_and_pos_after_selected(previous_text)
+        if text_content == None or start_pos==None:
+            return None
 
         # Generate candidate phrases starting from the end of the selected text
         tgt_phrases, full_phrase = generate_phrases(text_content, start_pos)
+        if tgt_phrases == None or full_phrase == None:
+            return None
 
         # Tokenize and compute embeddings
         import torch
@@ -413,7 +414,7 @@ class SRTManagerApp:
         scores = torch.matmul(emb_src, emb_tgt.T).squeeze()
         
         if scores.dim() == 0:
-            return []
+            return None
         
         k = min(k, len(scores))
         topk_scores, topk_indices = torch.topk(scores, k=k)
@@ -433,7 +434,6 @@ class SRTManagerApp:
             self.srt_table.item(item, values=(values[0], ""), tags=("mismatch",))
 
     def export_srt(self):
-        """Export the updated table content to an SRT file."""
         if not self.srt_data:
             messagebox.showerror("Error", "No SRT file loaded.")
             return
