@@ -260,12 +260,17 @@
         
         if (subtitleText) {
             currentSubtitle.innerHTML = subtitleText;
+
             if (translationText) {
-                currentSubtitle.innerHTML += ` <span class="translation">[${translationText}]</span>`;
+                const translationElement = document.createElement('span');
+                translationElement.className = 'translation';
+                translationElement.textContent = `[${translationText}]`;
+                currentSubtitle.appendChild(document.createTextNode(' '));
+                currentSubtitle.appendChild(translationElement);
             }
         } else {
             currentSubtitle.innerHTML = '';
-        }
+}
     });
 
     back10.addEventListener('click', () => {
