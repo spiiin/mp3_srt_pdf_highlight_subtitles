@@ -49,7 +49,6 @@
             background-color: #f9f9f9;
             border: 1px solid #ddd;
             font-size: 16px;
-            font-style: italic;
             text-align: center;
             width: 80%;
             max-width: 800px;
@@ -169,7 +168,15 @@
     }
         
     function cleanText(text) {
-        return text.replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '').toLowerCase();
+        return text.replace(/[^a-zA-Zа-яА-ЯёЁ<>]/g, '').toLowerCase();
+    }
+    
+    function extractAndCleanPhrase(text) {
+        const match = text.match(/<b>(.*?)<\/b>/i);
+        if (match && match[1]) {
+            return cleanText(match[1]);
+        }
+        return cleanText(text);
     }
 
     function highlightSubtitle(subtitle) {
@@ -178,7 +185,7 @@
         }
         clearHighlights();
         
-        let subtitleText = cleanText(subtitle.text);
+        let subtitleText = extractAndCleanPhrase(subtitle.text);
         let accumulatedText = '';
         let startIndex = -1;
         let endIndex = -1;
