@@ -1,5 +1,9 @@
 import re
+import sys
+import io
 import argparse
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 def clean_text(text):
     return re.sub(r'<[^>]+>', '', text).strip()
@@ -31,8 +35,14 @@ def read_aligned_file(file_path):
     return aligned_data
 
 def find_matching_translation(cleaned_phrase, aligned_data):
+    if not cleaned_phrase.strip():
+        return ""
     for english_phrase, translated_phrase in aligned_data:
-        if cleaned_phrase in english_phrase:
+        if not english_phrase.strip(): #TODO: every time...
+            continue
+        if (cleaned_phrase in english_phrase) or (english_phrase in cleaned_phrase):
+            #print("AAA: ", english_phrase)
+            #print("BBB: ", cleaned_phrase)
             return translated_phrase
     return ""
 
@@ -44,6 +54,7 @@ def create_new_srt(srt_data, aligned_data, output_file):
             if translation:
                 output_text = translation
             else:
+                print(f"Translation not found: {cleaned_phrase}")
                 output_text = ''
             file.write(f"{index}\n{timing}\n{output_text.strip()}\n\n")
 
