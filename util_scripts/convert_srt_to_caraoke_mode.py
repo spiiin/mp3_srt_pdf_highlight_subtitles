@@ -29,7 +29,10 @@ def read_text_file(file_path):
 
 def find_matching_sentence(phrase, sentences):
     for sentence in sentences:
-        if phrase in sentence:
+        check1 = phrase in sentence
+        check2 = len(phrase) > 20 and phrase[5:] in sentence #heuristic hack if phrase is glued from 2 sentences
+        check3 = len(phrase) > 20 and phrase[:5] in sentence
+        if check1 or check2 or check3:
             highlighted_sentence = re.sub(
                 re.escape(phrase), f"<b>{phrase}</b>", sentence, flags=re.IGNORECASE
             )
