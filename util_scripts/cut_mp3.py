@@ -1,14 +1,6 @@
 from pydub import AudioSegment
 
 def trim_mp3(input_file, output_file, start_time, end_time):
-    """
-    Обрезает MP3 файл.
-
-    :param input_file: Путь к исходному MP3 файлу
-    :param output_file: Путь для сохранения обрезанного файла
-    :param start_time: Начало обрезки в миллисекундах
-    :param end_time: Конец обрезки в миллисекундах
-    """
     try:
         audio = AudioSegment.from_file(input_file, format="mp3")
         trimmed_audio = audio[start_time:end_time]

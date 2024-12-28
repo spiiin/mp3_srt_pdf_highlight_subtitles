@@ -68,8 +68,18 @@ def replace_text_in_srt(srt_file_path, input_text_file_path, output_srt_file_pat
     with open(output_srt_file_path, 'w', encoding='utf-8') as output_file:
         output_file.writelines(new_srt_lines)
 
+def create_srt_from_text(text_file_path, output_srt_file_path):
+    with open(text_file_path, 'r', encoding='utf-8') as text_file:
+        lines = text_file.readlines()
+
+    with open(output_srt_file_path, 'w', encoding='utf-8') as srt_file:
+        for i, line in enumerate(lines):
+            srt_file.write(f"{i + 1}\n")
+            srt_file.write("00:00:00,000 --> 00:00:00,000\n")
+            srt_file.write(f"{line.strip()}\n\n")
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Инструмент для извлечения и замены текста в файлах .srt.')
+    parser = argparse.ArgumentParser(description='Инструмент для извлечения, замены и создания файлов .srt.')
     subparsers = parser.add_subparsers(dest='command', help='Доступные команды')
 
     parser_extract = subparsers.add_parser('extract', help='Извлечь текст из файла .srt')
@@ -81,6 +91,10 @@ if __name__ == '__main__':
     parser_replace.add_argument('text_file', help='Путь к текстовому файлу с новым текстом')
     parser_replace.add_argument('output_srt_file', help='Путь к выходному файлу .srt')
 
+    parser_create = subparsers.add_parser('create', help='Создать srt файл из текстового файла')
+    parser_create.add_argument('text_file', help='Путь к текстовому файлу')
+    parser_create.add_argument('output_srt_file', help='Путь к выходному файлу .srt')
+
     args = parser.parse_args()
 
     if args.command == 'extract':
@@ -89,9 +103,12 @@ if __name__ == '__main__':
     elif args.command == 'replace':
         replace_text_in_srt(args.srt_file, args.text_file, args.output_srt_file)
         print(f'Текст в {args.srt_file} успешно заменен текстом из {args.text_file}. Результат сохранен в {args.output_srt_file}')
+    elif args.command == 'create':
+        create_srt_from_text(args.text_file, args.output_srt_file)
+        print(f'SRT файл успешно создан из {args.text_file} и сохранен в {args.output_srt_file}')
     else:
         parser.print_help()
-        
-        
+
 #python srt2txt.py extract input.srt output.txt
 #python srt2txt.py replace input.srt new_text.txt output.srt
+#python srt2txt.py create input.txt output.srt
